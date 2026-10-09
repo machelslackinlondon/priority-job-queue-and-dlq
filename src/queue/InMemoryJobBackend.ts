@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { QueueCapacityError } from "../domain/errors.js";
 import { PRIORITY_WEIGHT, type Job, type JobLease, type NewJob, type SubmitResult } from "../domain/job.js";
-import type { BackendHealth, BackendStats } from "./JobBackend.js";
+import type { BackendHealth, BackendStats, LeaseMutation, TransitionResult } from "./JobBackend.js";
 import { BinaryHeap } from "./BinaryHeap.js";
 
 export interface InMemoryJobBackendOptions {
@@ -64,6 +64,36 @@ export class InMemoryJobBackend {
       return { job: running, token, workerId: input.workerId, expiresAt: lease.expiresAt };
     }
     return null;
+  }
+
+  async renew(input: LeaseMutation & { now: number; leaseMs: number }): Promise<boolean> {
+    const current = this.jobs.get(input.jobId);
+    if (current?.state !== "running" || current.lease?.token !== input.token) return false;
+    this.jobs.set(current.id, Object.freeze({
+      ...current,
+      updatedAt: input.now,
+      lease: Object.freeze({ ...current.lease, expiresAt: input.now + input.leaseMs })
+    }));
+    return true;
+  }
+
+  async complete(input: LeaseMutation & { now: number }): Promise<TransitionResult> {
+    const current = this.jobs.get(input.jobId);
+    if (current === undefined) return { applied: false, reason: "not_found" };
+    if (current.state === "completed" || current.state === "dead_lettered") {
+      return { applied: false, reason: "already_terminal" };
+    }
+    if (current.state !== "running") return { applied: false, reason: "invalid_state" };
+    if (current.lease?.token !== input.token) return { applied: false, reason: "stale_lease" };
+    const { lease: _lease, ...withoutLease } = current;
+    this.jobs.set(current.id, Object.freeze({
+      ...withoutLease,
+      state: "completed",
+      completedAt: input.now,
+      updatedAt: input.now
+    }));
+    this.outstanding -= 1;
+    return { applied: true };
   }
 
   async stats(): Promise<BackendStats> {
