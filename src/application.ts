@@ -40,7 +40,8 @@ export async function createApplication(config: AppConfig): Promise<Application>
   const workers = new WorkerPool({
     backend, handlers: handlers(), concurrency: config.workerConcurrency, timeoutMs: config.jobTimeoutMs,
     leaseMs: config.leaseDurationMs, heartbeatMs: config.heartbeatIntervalMs, now: Date.now,
-    retryPolicy: { baseMs: config.retryBaseDelayMs, maxMs: config.retryMaxDelayMs, jitterRatio: config.retryJitterRatio }
+    retryPolicy: { baseMs: config.retryBaseDelayMs, maxMs: config.retryMaxDelayMs, jitterRatio: config.retryJitterRatio },
+    metrics
   });
   const scheduler = new Scheduler(backend, { intervalMs: config.schedulerIntervalMs, batchSize: 100, retentionMs: config.terminalRetentionMs, now: Date.now });
   const reconciler = new DlqReconciler(backend, config.dlqReconcileIntervalMs, Date.now);

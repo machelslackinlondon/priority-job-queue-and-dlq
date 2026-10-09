@@ -40,7 +40,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     registerJobRoutes(app, {
       backend: options.backend,
       maxPayloadBytes: options.config.maxPayloadBytes,
-      now: options.now ?? Date.now
+      now: options.now ?? Date.now,
+      ...(options.metrics === undefined ? {} : { metrics: options.metrics })
     });
   }
 

@@ -2,6 +2,7 @@ import { NonRetryableJobError, RetryableJobError } from "../domain/errors.js";
 import type { FailureSummary } from "../domain/job.js";
 import type { JobBackend } from "../queue/JobBackend.js";
 import { calculateBackoff, type RetryPolicy } from "../retry/backoff.js";
+import type { JobMetrics } from "../metrics/JobMetrics.js";
 import type { HandlerRegistry } from "./handlers.js";
 import { runWithDeadline } from "./runWithDeadline.js";
 
@@ -15,6 +16,7 @@ export interface WorkerPoolOptions {
   readonly now: () => number;
   readonly retryPolicy?: RetryPolicy;
   readonly random?: () => number;
+  readonly metrics?: JobMetrics;
 }
 
 export class WorkerPool {
@@ -36,6 +38,7 @@ export class WorkerPool {
     });
     if (lease === null) return false;
     this.active += 1;
+    const processingStartedAt = this.options.now();
     const heartbeat = setInterval(() => {
       void this.options.backend.renew({
         jobId: lease.job.id,
@@ -50,6 +53,8 @@ export class WorkerPool {
       try {
         await runWithDeadline((signal) => handler({ job: lease.job, signal }), this.options.timeoutMs);
         await this.options.backend.complete({ jobId: lease.job.id, token: lease.token, now: this.options.now() });
+        const completedAt = this.options.now();
+        this.options.metrics?.completed(lease.job.type, (completedAt - processingStartedAt) / 1000, (completedAt - lease.job.createdAt) / 1000);
       } catch (error) {
         const now = this.options.now();
         const retryable = !(error instanceof NonRetryableJobError);
@@ -62,6 +67,7 @@ export class WorkerPool {
           retryable,
           failedAt: now
         };
+        this.options.metrics?.failed(lease.job.type, code);
         if (retryable && lease.job.attempts < lease.job.maxAttempts) {
           const delay = calculateBackoff(
             lease.job.attempts - 1,
@@ -71,8 +77,10 @@ export class WorkerPool {
           await this.options.backend.retry({
             jobId: lease.job.id, token: lease.token, now, availableAt: now + delay, failure
           });
+          this.options.metrics?.retried(lease.job.type);
         } else {
           await this.options.backend.deadLetter({ jobId: lease.job.id, token: lease.token, now, failure });
+          this.options.metrics?.deadLettered(lease.job.type);
         }
       }
       return true;
