@@ -15,7 +15,7 @@
     "start": "node dist/server.js",
     "test": "jest",
     "test:unit": "jest --runInBand",
-    "test:redis": "jest --runInBand tests/queue/redisBackend.contract.test.ts tests/queue/redisContention.test.ts",
+    "test:redis": "jest --runInBand tests/queue/redisBackend.contract.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
