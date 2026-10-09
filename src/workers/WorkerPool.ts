@@ -19,6 +19,8 @@ export interface WorkerPoolOptions {
 
 export class WorkerPool {
   private active = 0;
+  private accepting = false;
+  private loops: Promise<void>[] = [];
 
   constructor(private readonly options: WorkerPoolOptions) {}
 
@@ -86,5 +88,22 @@ export class WorkerPool {
         // Continue until the ready queue is drained.
       }
     }));
+  }
+
+  start(pollMs = 25): void {
+    if (this.accepting) return;
+    this.accepting = true;
+    this.loops = Array.from({ length: this.options.concurrency }, (_, index) => this.loop(`worker-${index}`, pollMs));
+  }
+
+  stopClaiming(): void { this.accepting = false; }
+
+  async drain(): Promise<void> { await Promise.all(this.loops); }
+
+  private async loop(workerId: string, pollMs: number): Promise<void> {
+    while (this.accepting) {
+      const worked = await this.runOne(workerId);
+      if (!worked) await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
   }
 }

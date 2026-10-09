@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    environment:
+      JOB_BACKEND: memory
+      PORT: 3000
+    ports: ["3000:3000"]
+  app-redis:
+    profiles: ["redis"]
+    build: .
+    environment:
+      JOB_BACKEND: redis
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+    ports: ["3000:3000"]
+    depends_on:
+      redis: { condition: service_healthy }
+  redis:
+    profiles: ["redis"]
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  redis-test:
+    profiles: ["test"]
+    image: redis:8-alpine
+    ports: ["6379:6379"]
+volumes:
+  redis-data:
