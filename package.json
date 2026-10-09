@@ -1,0 +1,36 @@
+{
+  "name": "priority-job-queue-and-dlq",
+  "version": "1.0.0",
+  "description": "A bounded priority job queue with retries, leases, and a dead letter queue.",
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run build && npm test -- --runInBand",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "jest",
+    "test:unit": "jest --runInBand",
+    "test:redis": "jest --runInBand tests/queue/redisBackend.contract.test.ts tests/queue/redisContention.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "fastify": "5.12.5",
+    "@prometheus-io/client": "0.16.1",
+    "pino": "10.4.0",
+    "redis": "6.3.0"
+  },
+  "devDependencies": {
+    "@swc/core": "1.13.5",
+    "@swc/jest": "0.2.39",
+    "@types/jest": "30.0.0",
+    "@types/node": "24.10.0",
+    "autocannon": "8.0.0",
+    "jest": "30.5.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
