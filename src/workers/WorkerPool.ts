@@ -48,9 +48,9 @@ export class WorkerPool {
       });
     }, this.options.heartbeatMs);
     try {
-      const handler = this.options.handlers.get(lease.job.type);
-      if (handler === undefined) throw new NonRetryableJobError("UNKNOWN_JOB_TYPE", `No handler for ${lease.job.type}`);
       try {
+        const handler = this.options.handlers.get(lease.job.type);
+        if (handler === undefined) throw new NonRetryableJobError("UNKNOWN_JOB_TYPE", `No handler for ${lease.job.type}`);
         await runWithDeadline((signal) => handler({ job: lease.job, signal }), this.options.timeoutMs);
         await this.options.backend.complete({ jobId: lease.job.id, token: lease.token, now: this.options.now() });
         const completedAt = this.options.now();
@@ -79,8 +79,8 @@ export class WorkerPool {
           });
           this.options.metrics?.retried(lease.job.type);
         } else {
-          await this.options.backend.deadLetter({ jobId: lease.job.id, token: lease.token, now, failure });
-          this.options.metrics?.deadLettered(lease.job.type);
+          const result = await this.options.backend.deadLetter({ jobId: lease.job.id, token: lease.token, now, failure });
+          if (result.applied) this.options.metrics?.deadLettered(lease.job.type);
         }
       }
       return true;

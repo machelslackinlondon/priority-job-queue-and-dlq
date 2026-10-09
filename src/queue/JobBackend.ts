@@ -7,7 +7,7 @@ export interface LeaseMutation {
 
 export interface TransitionResult {
   readonly applied: boolean;
-  readonly reason?: "stale_lease" | "invalid_state" | "already_terminal" | "not_found";
+  readonly reason?: "stale_lease" | "invalid_state" | "already_terminal" | "not_found" | "dlq_pending";
 }
 
 export interface BackendStats {

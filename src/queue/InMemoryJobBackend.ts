@@ -7,6 +7,7 @@ import { BinaryHeap } from "./BinaryHeap.js";
 export interface InMemoryJobBackendOptions {
   readonly capacity: number;
   readonly maxAttempts: number;
+  readonly dlqWrite?: (job: Job) => void;
 }
 
 export class InMemoryJobBackend {
@@ -157,13 +158,25 @@ export class InMemoryJobBackend {
     if (current.state !== "running") return { applied: false, reason: "invalid_state" };
     if (current.lease?.token !== input.token) return { applied: false, reason: "stale_lease" };
     const { lease: _lease, ...withoutLease } = current;
-    this.jobs.set(current.id, Object.freeze({
+    const deadLettered: Job = Object.freeze({
       ...withoutLease,
       state: "dead_lettered",
       completedAt: input.now,
       updatedAt: input.now,
       lastFailure: input.failure
-    }));
+    });
+    try {
+      this.options.dlqWrite?.(deadLettered);
+    } catch {
+      this.jobs.set(current.id, Object.freeze({
+        ...withoutLease,
+        state: "dlq_pending",
+        updatedAt: input.now,
+        lastFailure: input.failure
+      }));
+      return { applied: false, reason: "dlq_pending" };
+    }
+    this.jobs.set(current.id, deadLettered);
     this.outstanding -= 1;
     return { applied: true };
   }
@@ -182,8 +195,24 @@ export class InMemoryJobBackend {
     return recovered;
   }
 
-  async reconcileDlq(_now: number, _limit: number): Promise<number> {
-    return 0;
+  async reconcileDlq(now: number, limit: number): Promise<number> {
+    let reconciled = 0;
+    for (const current of this.jobs.values()) {
+      if (reconciled >= limit) break;
+      if (current.state !== "dlq_pending") continue;
+      const deadLettered: Job = Object.freeze({
+        ...current, state: "dead_lettered", completedAt: now, updatedAt: now
+      });
+      try {
+        this.options.dlqWrite?.(deadLettered);
+      } catch {
+        continue;
+      }
+      this.jobs.set(current.id, deadLettered);
+      this.outstanding -= 1;
+      reconciled += 1;
+    }
+    return reconciled;
   }
 
   async purgeTerminal(now: number, retentionMs: number): Promise<number> {
@@ -202,17 +231,19 @@ export class InMemoryJobBackend {
     let queued = 0;
     let running = 0;
     let delayed = 0;
+    let dlqPending = 0;
     for (const job of this.jobs.values()) {
       if (job.state === "queued") queued += 1;
       if (job.state === "running") running += 1;
       if (job.state === "retry_scheduled") delayed += 1;
+      if (job.state === "dlq_pending") dlqPending += 1;
     }
     return {
       outstanding: this.outstanding,
       queued,
       delayed,
       running,
-      dlqPending: 0,
+      dlqPending,
       capacity: this.options.capacity
     };
   }

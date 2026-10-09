@@ -27,3 +27,13 @@ test("dead-letters a non-retryable failure", async () => {
   await expect(poolFor(backend, handlers).runOne("w")).resolves.toBe(true);
   expect((await backend.get(submitted.job.id))?.state).toBe("dead_lettered");
 });
+
+test("dead-letters an unregistered job type instead of abandoning its lease", async () => {
+  const backend = new InMemoryJobBackend({ capacity: 1, maxAttempts: 3 });
+  const submitted = await backend.submit({ type: "missing", priority: "normal", payload: {} }, { now: 0 });
+  const handlers = new HandlerRegistry();
+  await expect(poolFor(backend, handlers).runOne("w")).resolves.toBe(true);
+  expect(await backend.get(submitted.job.id)).toMatchObject({
+    state: "dead_lettered", lastFailure: { code: "UNKNOWN_JOB_TYPE", retryable: false }
+  });
+});
