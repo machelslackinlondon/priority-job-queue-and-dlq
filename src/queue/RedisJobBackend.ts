@@ -3,7 +3,7 @@ import { createClient } from "redis";
 import { BackendUnavailableError, QueueCapacityError } from "../domain/errors.js";
 import { PRIORITIES, type FailureSummary, type Job, type JobLease, type NewJob, type SubmitResult } from "../domain/job.js";
 import type { BackendHealth, BackendStats, JobBackend, LeaseMutation, TransitionResult } from "./JobBackend.js";
-import { CLAIM_SCRIPT, COMPLETE_SCRIPT, DEAD_LETTER_SCRIPT, PROMOTE_SCRIPT, RECOVER_SCRIPT, RENEW_SCRIPT, RETRY_SCRIPT, SUBMIT_SCRIPT, transitionResult } from "./redis/scripts.js";
+import { CLAIM_SCRIPT, COMPLETE_SCRIPT, DEAD_LETTER_SCRIPT, PROMOTE_SCRIPT, PURGE_TERMINAL_SCRIPT, RECOVER_SCRIPT, RENEW_SCRIPT, RETRY_SCRIPT, SUBMIT_SCRIPT, transitionResult } from "./redis/scripts.js";
 
 type Client = ReturnType<typeof createClient>;
 
@@ -23,6 +23,7 @@ export class RedisJobBackend implements JobBackend {
 
   private key(suffix: string): string { return `${this.options.namespace}:${suffix}`; }
   private jobKey(id: string): string { return this.key(`job:${id}`); }
+  private jobIdempotencyKey(id: string): string { return this.key(`job-idem:${id}`); }
   private idemKey(value?: string): string {
     return this.key(`idem:${value === undefined ? "none" : createHash("sha256").update(value).digest("hex")}`);
   }
@@ -38,7 +39,7 @@ export class RedisJobBackend implements JobBackend {
     const id = randomUUID();
     const job: Job = { ...input, id, state: "queued", attempts: 0, maxAttempts: this.options.maxAttempts, createdAt: context.now, updatedAt: context.now };
     const reply = await this.eval(SUBMIT_SCRIPT,
-      [this.key("outstanding"), this.jobKey(id), this.idemKey(context.idempotencyKey), this.key(`ready:${input.priority}`)],
+      [this.key("outstanding"), this.jobKey(id), this.idemKey(context.idempotencyKey), this.key(`ready:${input.priority}`), this.jobIdempotencyKey(id)],
       [String(this.options.capacity), JSON.stringify(job), id, context.idempotencyKey === undefined ? "0" : "1"]
     ) as string[];
     if (reply[0] === "FULL") throw new QueueCapacityError();
@@ -72,7 +73,7 @@ export class RedisJobBackend implements JobBackend {
   }
   async complete(input: LeaseMutation & { now: number }): Promise<TransitionResult> {
     return transitionResult(await this.eval(COMPLETE_SCRIPT,
-      [this.jobKey(input.jobId), this.key("leases"), this.key("outstanding")], [input.token, String(input.now), input.jobId]));
+      [this.jobKey(input.jobId), this.key("leases"), this.key("outstanding"), this.key("terminal")], [input.token, String(input.now), input.jobId]));
   }
   async retry(input: LeaseMutation & { now: number; availableAt: number; failure: FailureSummary }): Promise<TransitionResult> {
     return transitionResult(await this.eval(RETRY_SCRIPT,
@@ -81,7 +82,7 @@ export class RedisJobBackend implements JobBackend {
   }
   async deadLetter(input: LeaseMutation & { now: number; failure: FailureSummary }): Promise<TransitionResult> {
     return transitionResult(await this.eval(DEAD_LETTER_SCRIPT,
-      [this.jobKey(input.jobId), this.key("leases"), this.key("dlq"), this.key("outstanding")],
+      [this.jobKey(input.jobId), this.key("leases"), this.key("dlq"), this.key("outstanding"), this.key("terminal")],
       [input.token, String(input.now), JSON.stringify(input.failure), input.jobId]));
   }
 
@@ -96,7 +97,11 @@ export class RedisJobBackend implements JobBackend {
       [this.key("job:"), String(now), String(limit)]));
   }
   async reconcileDlq(): Promise<number> { return 0; }
-  async purgeTerminal(): Promise<number> { return 0; }
+  async purgeTerminal(now: number, retentionMs: number): Promise<number> {
+    return Number(await this.eval(PURGE_TERMINAL_SCRIPT,
+      [this.key("terminal"), this.key("dlq")],
+      [String(now), String(retentionMs), this.key("job:"), this.key("job-idem:"), "1000"]));
+  }
   async stats(): Promise<BackendStats> {
     const [outstanding, delayed, running, ...ready] = await Promise.all([
       this.client.get(this.key("outstanding")), this.client.zCard(this.key("delayed")), this.client.zCard(this.key("leases")),

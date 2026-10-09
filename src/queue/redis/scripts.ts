@@ -6,7 +6,10 @@ if outstanding >= tonumber(ARGV[1]) then return {'FULL', ''} end
 redis.call('SET', KEYS[2], ARGV[2])
 redis.call('LPUSH', KEYS[4], ARGV[3])
 redis.call('INCR', KEYS[1])
-if ARGV[4] == '1' then redis.call('SET', KEYS[3], ARGV[3]) end
+if ARGV[4] == '1' then
+  redis.call('SET', KEYS[3], ARGV[3])
+  redis.call('SET', KEYS[5], KEYS[3])
+end
 return {'ADMITTED', ARGV[3]}
 `;
 
@@ -41,7 +44,7 @@ if job.state == 'completed' or job.state == 'dead_lettered' then return 'ALREADY
 if job.state ~= 'running' then return 'INVALID_STATE' end
 if not job.lease or job.lease.token ~= ARGV[1] then return 'STALE_LEASE' end
 job.state='completed'; job.completedAt=tonumber(ARGV[2]); job.updatedAt=tonumber(ARGV[2]); job.lease=nil
-redis.call('SET', KEYS[1], cjson.encode(job)); redis.call('ZREM', KEYS[2], ARGV[3]); redis.call('DECR', KEYS[3])
+redis.call('SET', KEYS[1], cjson.encode(job)); redis.call('ZREM', KEYS[2], ARGV[3]); redis.call('DECR', KEYS[3]); redis.call('ZADD', KEYS[4], ARGV[2], ARGV[3])
 return 'APPLIED'
 `;
 
@@ -62,7 +65,7 @@ if job.state == 'completed' or job.state == 'dead_lettered' then return 'ALREADY
 if job.state ~= 'running' then return 'INVALID_STATE' end
 if not job.lease or job.lease.token ~= ARGV[1] then return 'STALE_LEASE' end
 job.state='dead_lettered'; job.completedAt=tonumber(ARGV[2]); job.updatedAt=tonumber(ARGV[2]); job.lastFailure=cjson.decode(ARGV[3]); job.lease=nil
-redis.call('SET', KEYS[1], cjson.encode(job)); redis.call('ZREM', KEYS[2], ARGV[4]); redis.call('LPUSH', KEYS[3], ARGV[4]); redis.call('DECR', KEYS[4])
+redis.call('SET', KEYS[1], cjson.encode(job)); redis.call('ZREM', KEYS[2], ARGV[4]); redis.call('LPUSH', KEYS[3], ARGV[4]); redis.call('DECR', KEYS[4]); redis.call('ZADD', KEYS[5], ARGV[2], ARGV[4])
 return 'APPLIED'
 `;
 
@@ -101,6 +104,23 @@ for _,id in ipairs(ids) do
         redis.call('LPUSH',KEYS[index],id); count=count+1
       end
     end
+  end
+end
+return count
+`;
+
+export const PURGE_TERMINAL_SCRIPT = `
+local cutoff=tonumber(ARGV[1])-tonumber(ARGV[2])
+local ids=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',cutoff,'LIMIT',0,tonumber(ARGV[5])); local count=0
+for _,id in ipairs(ids) do
+  if redis.call('ZREM',KEYS[1],id)==1 then
+    local reverseKey=ARGV[4]..id
+    local idemKey=redis.call('GET',reverseKey)
+    if idemKey and redis.call('GET',idemKey)==id then redis.call('DEL',idemKey) end
+    redis.call('DEL',reverseKey)
+    redis.call('DEL',ARGV[3]..id)
+    redis.call('LREM',KEYS[2],0,id)
+    count=count+1
   end
 end
 return count
