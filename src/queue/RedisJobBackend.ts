@@ -3,7 +3,7 @@ import { createClient } from "redis";
 import { BackendUnavailableError, QueueCapacityError } from "../domain/errors.js";
 import { PRIORITIES, type FailureSummary, type Job, type JobLease, type NewJob, type SubmitResult } from "../domain/job.js";
 import type { BackendHealth, BackendStats, JobBackend, LeaseMutation, TransitionResult } from "./JobBackend.js";
-import { CLAIM_SCRIPT, COMPLETE_SCRIPT, DEAD_LETTER_SCRIPT, RENEW_SCRIPT, RETRY_SCRIPT, SUBMIT_SCRIPT, transitionResult } from "./redis/scripts.js";
+import { CLAIM_SCRIPT, COMPLETE_SCRIPT, DEAD_LETTER_SCRIPT, PROMOTE_SCRIPT, RECOVER_SCRIPT, RENEW_SCRIPT, RETRY_SCRIPT, SUBMIT_SCRIPT, transitionResult } from "./redis/scripts.js";
 
 type Client = ReturnType<typeof createClient>;
 
@@ -86,29 +86,14 @@ export class RedisJobBackend implements JobBackend {
   }
 
   async promoteDue(now: number, limit: number): Promise<number> {
-    const ids = await this.client.zRangeByScore(this.key("delayed"), 0, now, { LIMIT: { offset: 0, count: limit } });
-    let count = 0;
-    for (const id of ids) {
-      const job = await this.get(id);
-      if (job?.state !== "retry_scheduled") continue;
-      const { availableAt: _availableAt, ...rest } = job;
-      const queued: Job = { ...rest, state: "queued", updatedAt: now };
-      await this.client.multi().set(this.jobKey(id), JSON.stringify(queued)).zRem(this.key("delayed"), id)
-        .lPush(this.key(`ready:${job.priority}`), id).exec(); count += 1;
-    }
-    return count;
+    return Number(await this.eval(PROMOTE_SCRIPT,
+      [this.key("delayed"), ...PRIORITIES.map((priority) => this.key(`ready:${priority}`))],
+      [this.key("job:"), String(now), String(limit)]));
   }
   async recoverExpired(now: number, limit: number): Promise<number> {
-    const ids = await this.client.zRangeByScore(this.key("leases"), 0, now, { LIMIT: { offset: 0, count: limit } });
-    let count = 0;
-    for (const id of ids) {
-      const job = await this.get(id);
-      if (job?.state !== "running" || job.lease === undefined || job.lease.expiresAt > now) continue;
-      const { lease: _lease, ...rest } = job; const queued: Job = { ...rest, state: "queued", updatedAt: now };
-      await this.client.multi().set(this.jobKey(id), JSON.stringify(queued)).zRem(this.key("leases"), id)
-        .lPush(this.key(`ready:${job.priority}`), id).exec(); count += 1;
-    }
-    return count;
+    return Number(await this.eval(RECOVER_SCRIPT,
+      [this.key("leases"), ...PRIORITIES.map((priority) => this.key(`ready:${priority}`))],
+      [this.key("job:"), String(now), String(limit)]));
   }
   async reconcileDlq(): Promise<number> { return 0; }
   async purgeTerminal(): Promise<number> { return 0; }
